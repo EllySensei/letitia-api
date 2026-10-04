@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const db = require('./lib/db');
 const { initDatabase } = require('./db_init');
@@ -32,9 +33,8 @@ if (process.env.CORS_ORIGIN) {
     });
 }
 
-app.get('/', (req, res) => {
-    res.send('Hello world!');
-})
+// Serves the frontend, so http://localhost:3000 opens the app and its API calls stay same-origin.
+app.use(express.static(path.resolve(__dirname, process.env.FRONTEND_DIR || '../Laetitia-frontend')));
 
 // Login is public; every other route needs a token, and only admins can make changes.
 app.use('/auth', require('./routes/auth'));
