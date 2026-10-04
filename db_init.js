@@ -17,7 +17,7 @@ const TABLES = [
     },
     {
         name: 'clients',
-        columns: ['client_id', 'full_name', 'phone', 'email', 'billing_name', 'billing_address', 'created_at'],
+        columns: ['client_id', 'full_name', 'phone', 'email', 'billing_name', 'billing_address', 'is_deleted', 'created_at'],
         sql: `CREATE TABLE IF NOT EXISTS clients (
             client_id       INT AUTO_INCREMENT PRIMARY KEY,
             full_name       VARCHAR(150) NOT NULL,
@@ -25,6 +25,7 @@ const TABLES = [
             email           VARCHAR(150) UNIQUE,
             billing_name    VARCHAR(150),
             billing_address TEXT,
+            is_deleted      BOOLEAN NOT NULL DEFAULT FALSE,
             created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB`,
     },
@@ -40,26 +41,31 @@ const TABLES = [
     },
     {
         name: 'consumables',
-        columns: ['consumable_id', 'name', 'unit', 'current_level', 'reorder_level', 'last_restocked_at'],
+        columns: ['consumable_id', 'name', 'unit', 'current_level', 'reorder_level', 'last_restocked_at', 'is_deleted'],
         sql: `CREATE TABLE IF NOT EXISTS consumables (
             consumable_id     INT AUTO_INCREMENT PRIMARY KEY,
             name              VARCHAR(120) NOT NULL,
             unit              VARCHAR(30)  NOT NULL,
             current_level     INT NOT NULL DEFAULT 0,
             reorder_level     INT NOT NULL DEFAULT 0,
-            last_restocked_at DATETIME
+            last_restocked_at DATETIME,
+            is_deleted        BOOLEAN NOT NULL DEFAULT FALSE
         ) ENGINE=InnoDB`,
     },
     {
         name: 'rental_items',
-        columns: ['item_id', 'name', 'category', 'qty_total', 'rental_price', 'item_condition'],
+        columns: ['item_id', 'name', 'category', 'qty_total', 'rental_price', 'item_condition',
+            'reorder_level', 'qty_out_of_service', 'is_deleted'],
         sql: `CREATE TABLE IF NOT EXISTS rental_items (
             item_id        INT AUTO_INCREMENT PRIMARY KEY,
             name           VARCHAR(150) NOT NULL,
             category       VARCHAR(100),
             qty_total      INT NOT NULL DEFAULT 1,
             rental_price   DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-            item_condition VARCHAR(50)
+            item_condition VARCHAR(50),
+            reorder_level      INT NOT NULL DEFAULT 0,
+            qty_out_of_service INT NOT NULL DEFAULT 0,
+            is_deleted         BOOLEAN NOT NULL DEFAULT FALSE
         ) ENGINE=InnoDB`,
     },
     {
@@ -78,7 +84,7 @@ const TABLES = [
     {
         name: 'events',
         columns: ['event_id', 'client_id', 'package_id', 'event_date', 'start_time', 'venue_name',
-            'venue_address', 'status', 'contract_value', 'setup_notes'],
+            'venue_address', 'status', 'contract_value', 'setup_notes', 'created_at'],
         sql: `CREATE TABLE IF NOT EXISTS events (
             event_id       INT AUTO_INCREMENT PRIMARY KEY,
             client_id      INT NOT NULL,
@@ -87,9 +93,10 @@ const TABLES = [
             start_time     TIME,
             venue_name     VARCHAR(150),
             venue_address  TEXT,
-            status         VARCHAR(50) NOT NULL DEFAULT 'Inquired',
+            status         VARCHAR(50) NOT NULL DEFAULT 'Pending',
             contract_value DECIMAL(10,2) NOT NULL DEFAULT 0.00,
             setup_notes    TEXT,
+            created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT fk_events_client  FOREIGN KEY (client_id)  REFERENCES clients (client_id)   ON DELETE RESTRICT,
             CONSTRAINT fk_events_package FOREIGN KEY (package_id) REFERENCES packages (package_id) ON DELETE SET NULL
         ) ENGINE=InnoDB`,
@@ -122,7 +129,8 @@ const TABLES = [
     },
     {
         name: 'event_items',
-        columns: ['event_item_id', 'event_id', 'item_id', 'qty', 'is_reserved', 'return_due_date', 'return_status'],
+        columns: ['event_item_id', 'event_id', 'item_id', 'qty', 'is_reserved', 'return_due_date', 'return_status',
+            'pull_status'],
         sql: `CREATE TABLE IF NOT EXISTS event_items (
             event_item_id   INT AUTO_INCREMENT PRIMARY KEY,
             event_id        INT NOT NULL,
@@ -131,6 +139,7 @@ const TABLES = [
             is_reserved     BOOLEAN DEFAULT FALSE,
             return_due_date DATE,
             return_status   VARCHAR(50) NOT NULL DEFAULT 'Pending',
+            pull_status     VARCHAR(20) NOT NULL DEFAULT 'Pending',
             CONSTRAINT fk_ei_event FOREIGN KEY (event_id) REFERENCES events (event_id)      ON DELETE CASCADE,
             CONSTRAINT fk_ei_item  FOREIGN KEY (item_id)  REFERENCES rental_items (item_id) ON DELETE RESTRICT
         ) ENGINE=InnoDB`,
@@ -148,6 +157,30 @@ const TABLES = [
             CONSTRAINT fk_rl_event_item FOREIGN KEY (event_item_id) REFERENCES event_items (event_item_id) ON DELETE CASCADE
         ) ENGINE=InnoDB`,
     },
+    {
+        name: 'notifications',
+        columns: ['notification_id', 'message', 'type', 'is_read', 'ref_key', 'created_at'],
+        sql: `CREATE TABLE IF NOT EXISTS notifications (
+            notification_id INT AUTO_INCREMENT PRIMARY KEY,
+            message         VARCHAR(500) NOT NULL,
+            type            VARCHAR(30)  NOT NULL,
+            is_read         BOOLEAN NOT NULL DEFAULT FALSE,
+            ref_key         VARCHAR(100) UNIQUE,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB`,
+    },
+];
+
+// Columns added after the first schema. CREATE TABLE IF NOT EXISTS leaves existing tables
+// alone, so databases created earlier get them here; on fresh databases these are no-ops.
+const ADDED_COLUMNS = [
+    ['clients', 'is_deleted', 'BOOLEAN NOT NULL DEFAULT FALSE'],
+    ['consumables', 'is_deleted', 'BOOLEAN NOT NULL DEFAULT FALSE'],
+    ['rental_items', 'reorder_level', 'INT NOT NULL DEFAULT 0'],
+    ['rental_items', 'qty_out_of_service', 'INT NOT NULL DEFAULT 0'],
+    ['rental_items', 'is_deleted', 'BOOLEAN NOT NULL DEFAULT FALSE'],
+    ['events', 'created_at', 'DATETIME DEFAULT CURRENT_TIMESTAMP'],
+    ['event_items', 'pull_status', "VARCHAR(20) NOT NULL DEFAULT 'Pending'"],
 ];
 
 // Identifiers can't be bound as query parameters, so only allow a safe character set.
@@ -209,6 +242,9 @@ async function initDatabase({ host, port, user, password, database }) {
         for (const table of TABLES) {
             await conn.query(table.sql);
             console.log(`[db] ${table.name}: ${before.has(table.name) ? 'already exists, skipped' : 'created'}`);
+        }
+        for (const [table, column, ddl] of ADDED_COLUMNS) {
+            await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN IF NOT EXISTS \`${column}\` ${ddl}`);
         }
 
         await verifyColumns(conn, database);
