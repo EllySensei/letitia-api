@@ -17,6 +17,8 @@ const dbConfig = {
     database: process.env.DB_NAME,
 };
 
+// Packages carry a picture, so they get a bigger body limit than everything else.
+app.use('/packages', express.json({ limit: '2mb' }));
 app.use(express.json({ limit: '100kb' }));
 
 // Lets the frontend call the API from another origin (e.g. a separate dev server).

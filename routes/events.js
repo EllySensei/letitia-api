@@ -17,7 +17,7 @@ const SETTABLE_STATUSES = ['Pending', 'Approved', 'Completed'];
 
 const EVENT_SELECT = `
     SELECT e.event_id, e.client_id, c.full_name AS client_name, e.package_id, p.name AS package_name,
-           e.event_date, e.start_time, e.venue_name, e.venue_address, e.setup_notes,
+           e.custom_order, e.event_date, e.start_time, e.venue_name, e.venue_address, e.setup_notes,
            ${EVENT_STATUS} AS status, e.contract_value, ${PAID} AS paid_amount, ${REMAINING} AS remaining,
            e.created_at
     FROM events e
@@ -27,6 +27,8 @@ const EVENT_SELECT = `
 const bookingSchema = {
     client_id: int({ required: true, min: 1 }),
     package_id: int({ min: 1 }),
+    // A "custom / self order" booked without a package, described in words.
+    custom_order: str({ max: 255 }),
     event_date: date({ required: true }),
     start_time: time(),
     venue_name: str({ max: 150 }),
@@ -139,7 +141,7 @@ router.post('/', async (req, res) => {
         let basePrice = 0;
         let packageLines = [];
         if (input.package_id) {
-            const [pkg] = await conn.query('SELECT base_price FROM packages WHERE package_id = ?', [input.package_id]);
+            const [pkg] = await conn.query('SELECT base_price FROM packages WHERE package_id = ? AND is_deleted = 0', [input.package_id]);
             if (!pkg) throw new HttpError(400, `Package ${input.package_id} does not exist`);
             basePrice = pkg.base_price;
             packageLines = await conn.query('SELECT item_id, qty FROM package_items WHERE package_id = ?', [input.package_id]);
@@ -193,10 +195,10 @@ router.post('/', async (req, res) => {
         }
 
         const result = await conn.query(
-            `INSERT INTO events (client_id, package_id, event_date, start_time, venue_name, venue_address,
+            `INSERT INTO events (client_id, package_id, custom_order, event_date, start_time, venue_name, venue_address,
                                  status, contract_value, setup_notes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [input.client_id, input.package_id ?? null, input.event_date, input.start_time ?? null, input.venue_name ?? null,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [input.client_id, input.package_id ?? null, input.custom_order ?? null, input.event_date, input.start_time ?? null, input.venue_name ?? null,
                 input.venue_address ?? null, input.status, contractValue, input.setup_notes ?? null]
         );
         const id = result.insertId;
@@ -236,6 +238,7 @@ router.patch('/:id', async (req, res) => {
         start_time: time(),
         venue_name: str({ max: 150 }),
         venue_address: str({ max: 2000 }),
+        custom_order: str({ max: 255 }),
         setup_notes: str({ max: 5000 }),
         status: oneOf(SETTABLE_STATUSES, { required: true }),
         contract_value: money({ required: true }),

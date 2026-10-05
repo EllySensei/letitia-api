@@ -31,12 +31,15 @@ const TABLES = [
     },
     {
         name: 'packages',
-        columns: ['package_id', 'name', 'description', 'base_price'],
+        columns: ['package_id', 'name', 'type', 'description', 'base_price', 'image', 'is_deleted'],
         sql: `CREATE TABLE IF NOT EXISTS packages (
             package_id  INT AUTO_INCREMENT PRIMARY KEY,
             name        VARCHAR(120) NOT NULL,
+            type        VARCHAR(50),
             description TEXT,
-            base_price  DECIMAL(10,2) NOT NULL DEFAULT 0.00
+            base_price  DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+            image       MEDIUMTEXT,
+            is_deleted  BOOLEAN NOT NULL DEFAULT FALSE
         ) ENGINE=InnoDB`,
     },
     {
@@ -84,7 +87,7 @@ const TABLES = [
     {
         name: 'events',
         columns: ['event_id', 'client_id', 'package_id', 'event_date', 'start_time', 'venue_name',
-            'venue_address', 'status', 'contract_value', 'setup_notes', 'created_at'],
+            'venue_address', 'status', 'contract_value', 'custom_order', 'setup_notes', 'created_at'],
         sql: `CREATE TABLE IF NOT EXISTS events (
             event_id       INT AUTO_INCREMENT PRIMARY KEY,
             client_id      INT NOT NULL,
@@ -95,6 +98,7 @@ const TABLES = [
             venue_address  TEXT,
             status         VARCHAR(50) NOT NULL DEFAULT 'Pending',
             contract_value DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+            custom_order   VARCHAR(255),
             setup_notes    TEXT,
             created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT fk_events_client  FOREIGN KEY (client_id)  REFERENCES clients (client_id)   ON DELETE RESTRICT,
@@ -181,6 +185,10 @@ const ADDED_COLUMNS = [
     ['rental_items', 'is_deleted', 'BOOLEAN NOT NULL DEFAULT FALSE'],
     ['events', 'created_at', 'DATETIME DEFAULT CURRENT_TIMESTAMP'],
     ['event_items', 'pull_status', "VARCHAR(20) NOT NULL DEFAULT 'Pending'"],
+    ['packages', 'type', 'VARCHAR(50)'],
+    ['packages', 'image', 'MEDIUMTEXT'],
+    ['packages', 'is_deleted', 'BOOLEAN NOT NULL DEFAULT FALSE'],
+    ['events', 'custom_order', 'VARCHAR(255)'],
 ];
 
 // Identifiers can't be bound as query parameters, so only allow a safe character set.

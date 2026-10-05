@@ -24,7 +24,7 @@ router.get('/dashboard', async (req, res) => {
     const upcoming = await db.query(
         `SELECT * FROM (
              SELECT e.event_id, c.full_name AS client_name, e.event_date, e.start_time, e.venue_name,
-                    p.name AS package_name, ${EVENT_STATUS} AS status
+                    p.name AS package_name, e.custom_order, ${EVENT_STATUS} AS status
              FROM events e JOIN clients c ON c.client_id = e.client_id LEFT JOIN packages p ON p.package_id = e.package_id
              WHERE e.event_date BETWEEN CURDATE() AND CURDATE() + INTERVAL 4 DAY
          ) x WHERE x.status NOT IN ('Cancelled', 'Completed') ORDER BY event_date, start_time`
