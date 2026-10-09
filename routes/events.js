@@ -2,12 +2,12 @@ const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
 const {
-    validate, parseId, paging, likePattern, str, int, money, date, time, oneOf, list, object,
+    validate, parseId, paging, likePattern, nameFields, addressFields, str, email, phone, int, money, date, time, oneOf, list, object,
 } = require('../lib/validate');
 const {
-    EVENT_STATUS, PAID, REMAINING, LINE_DUE, RETURN_STATUS, freeOnDate, today, addDays, cents,
+    EVENT_STATUS, PAID, REMAINING, LINE_DUE, RETURN_STATUS, ADDRESS_PARTS, CLIENT_NAME, VENUE_ADDRESS, cents, freeOnDate, today,
 } = require('../lib/sql');
-const { notify } = require('../lib/notify');
+const { insertBooking } = require('../lib/bookings');
 
 const router = express.Router();
 
@@ -16,8 +16,10 @@ const STATUSES = ['Pending', 'Approved', 'Ongoing', 'Completed', 'Cancelled'];
 const SETTABLE_STATUSES = ['Pending', 'Approved', 'Completed'];
 
 const EVENT_SELECT = `
-    SELECT e.event_id, e.client_id, c.full_name AS client_name, e.package_id, p.name AS package_name,
-           e.custom_order, e.event_date, e.start_time, e.venue_name, e.venue_address, e.setup_notes,
+    SELECT e.event_id, e.client_id, ${CLIENT_NAME} AS client_name, e.package_id, p.name AS package_name,
+           e.event_type, e.source, e.custom_order, e.event_date, e.start_time, e.venue_name,
+           e.venue_street, e.venue_barangay, e.venue_city_municipality, e.venue_province,
+           ${VENUE_ADDRESS} AS venue_address, e.setup_notes,
            ${EVENT_STATUS} AS status, e.contract_value, ${PAID} AS paid_amount, ${REMAINING} AS remaining,
            e.created_at
     FROM events e
@@ -25,14 +27,24 @@ const EVENT_SELECT = `
     LEFT JOIN packages p ON p.package_id = e.package_id`;
 
 const bookingSchema = {
-    client_id: int({ required: true, min: 1 }),
+    client_id: int({ min: 1 }),
+    // A walk-in customer, saved as a new client together with the booking (instead of client_id).
+    // Without an address of their own they get the venue's.
+    new_client: object({
+        ...nameFields(),
+        phone: phone({ required: true }),
+        email: email(),
+        ...addressFields('', { required: false }),
+    }),
     package_id: int({ min: 1 }),
+    // What the event is for: Wedding, Birthday, ... or whatever was typed for "Other".
+    event_type: str({ required: true, max: 60 }),
     // A "custom / self order" booked without a package, described in words.
-    custom_order: str({ max: 255 }),
+    custom_order: str({ max: 2000 }),
     event_date: date({ required: true }),
     start_time: time(),
     venue_name: str({ max: 150 }),
-    venue_address: str({ max: 2000 }),
+    ...addressFields('venue_'),
     setup_notes: str({ max: 5000 }),
     status: oneOf(['Pending', 'Approved'], { default: 'Pending' }),
     contract_value: money(),
@@ -75,13 +87,6 @@ async function findEvent(id) {
     return event;
 }
 
-// Adds up quantities so the same id listed twice (or in both the package and the extras) is one line.
-function mergeQty(lines, key) {
-    const totals = new Map();
-    for (const line of lines) totals.set(line[key], (totals.get(line[key]) || 0) + line.qty);
-    return totals;
-}
-
 router.get('/', async (req, res) => {
     const { q, status, from, to, limit, offset } = validate(req.query, {
         q: str({ max: 100 }),
@@ -95,8 +100,8 @@ router.get('/', async (req, res) => {
     const where = [];
     const params = [];
     if (q) {
-        where.push('(c.full_name LIKE ? OR e.venue_name LIKE ? OR e.venue_address LIKE ? OR p.name LIKE ?)');
-        params.push(...Array(4).fill(likePattern(q)));
+        where.push(`(${CLIENT_NAME} LIKE ? OR e.venue_name LIKE ? OR ${VENUE_ADDRESS} LIKE ? OR p.name LIKE ? OR e.event_type LIKE ?)`);
+        params.push(...Array(5).fill(likePattern(q)));
     }
     if (from) { where.push('e.event_date >= ?'); params.push(from); }
     if (to) { where.push('e.event_date <= ?'); params.push(to); }
@@ -124,121 +129,76 @@ router.get('/:id', async (req, res) => {
     res.json(await findEvent(parseId(req.params.id)));
 });
 
+// Emails are unique per client, so a walk-in whose email is on file must be picked from the list.
+async function insertWalkIn(conn, client, booking) {
+    if (client.email) {
+        const [row] = await conn.query('SELECT client_id FROM clients WHERE email = ?', [client.email]);
+        if (row) throw new HttpError(409, `${client.email} already belongs to client #${row.client_id}; pick them from the client list`);
+    }
+    const ownAddress = ADDRESS_PARTS.some((part) => client[part]);
+    const address = ADDRESS_PARTS.map((part) => (ownAddress ? client[part] : booking[`venue_${part}`]) ?? null);
+    const result = await conn.query(
+        `INSERT INTO clients (first_name, middle_name, last_name, phone_country_code, phone_number, email, ${ADDRESS_PARTS.join(', ')})
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [client.first_name, client.middle_name ?? null, client.last_name, client.phone.phone_country_code, client.phone.phone_number,
+            client.email ?? null, ...address]
+    );
+    return result.insertId;
+}
+
 // New booking. Everything (event, item lines, consumables, downpayment) is saved in one
 // transaction, so a failure part-way leaves nothing behind.
 router.post('/', async (req, res) => {
     const input = validate(req.body, bookingSchema);
-
+    if (!input.client_id === !input.new_client) throw new HttpError(400, 'Send either client_id or new_client');
     const eventId = await db.transaction(async (conn) => {
-        const now = await today(conn);
-        if (input.event_date < now) throw new HttpError(400, 'event_date cannot be in the past');
-        const dueDate = input.return_due_date ?? addDays(input.event_date, 1);
-        if (dueDate < input.event_date) throw new HttpError(400, 'return_due_date cannot be before event_date');
-
-        const [client] = await conn.query('SELECT full_name FROM clients WHERE client_id = ? AND is_deleted = 0', [input.client_id]);
-        if (!client) throw new HttpError(400, `Client ${input.client_id} does not exist`);
-
-        let basePrice = 0;
-        let packageLines = [];
-        if (input.package_id) {
-            const [pkg] = await conn.query('SELECT base_price FROM packages WHERE package_id = ? AND is_deleted = 0', [input.package_id]);
-            if (!pkg) throw new HttpError(400, `Package ${input.package_id} does not exist`);
-            basePrice = pkg.base_price;
-            packageLines = await conn.query('SELECT item_id, qty FROM package_items WHERE package_id = ?', [input.package_id]);
-        }
-
-        // Rental items: package contents plus any extras.
-        const extras = input.items ?? [];
-        const wanted = mergeQty([...packageLines, ...extras], 'item_id');
-        const itemIds = [...wanted.keys()];
-        const items = new Map();
-        if (itemIds.length) {
-            // Row locks serialise concurrent bookings of the same items until this commits.
-            const rows = await conn.query(
-                'SELECT item_id, name, rental_price, is_deleted FROM rental_items WHERE item_id IN (?) FOR UPDATE',
-                [itemIds]
-            );
-            for (const r of rows) items.set(r.item_id, r);
-            const unknown = itemIds.filter((id) => !items.has(id) || items.get(id).is_deleted);
-            if (unknown.length) throw new HttpError(400, `Unknown or deleted inventory item(s): ${unknown.join(', ')}`);
-
-            const free = await freeOnDate(conn, input.event_date, itemIds);
-            const short = itemIds
-                .filter((id) => wanted.get(id) > free.get(id))
-                .map((id) => ({ item_id: id, name: items.get(id).name, requested: wanted.get(id), available: free.get(id) }));
-            if (short.length) throw new HttpError(409, `Not enough stock on ${input.event_date}`, short);
-        }
-
-        // Consumables are used up, so they're deducted now.
-        const usage = mergeQty((input.consumables ?? []), 'consumable_id');
-        const consumableIds = [...usage.keys()];
-        if (consumableIds.length) {
-            const rows = await conn.query(
-                'SELECT consumable_id, name, current_level, is_deleted FROM consumables WHERE consumable_id IN (?) FOR UPDATE',
-                [consumableIds]
-            );
-            const byId = new Map(rows.map((r) => [r.consumable_id, r]));
-            const unknown = consumableIds.filter((id) => !byId.has(id) || byId.get(id).is_deleted);
-            if (unknown.length) throw new HttpError(400, `Unknown or deleted consumable(s): ${unknown.join(', ')}`);
-            const short = consumableIds
-                .filter((id) => usage.get(id) > byId.get(id).current_level)
-                .map((id) => ({ consumable_id: id, name: byId.get(id).name, requested: usage.get(id), available: byId.get(id).current_level }));
-            if (short.length) throw new HttpError(409, 'Not enough consumables in stock', short);
-        }
-
-        // Default contract: package price plus the rental price of any extra items.
-        const contractValue = input.contract_value
-            ?? (cents(basePrice) + extras.reduce((sum, l) => sum + cents(items.get(l.item_id).rental_price) * l.qty, 0)) / 100;
-        if (contractValue > 99999999.99) throw new HttpError(400, 'contract_value is too large');
-        if (input.downpayment && cents(input.downpayment.amount) > cents(contractValue)) {
-            throw new HttpError(400, 'Downpayment cannot exceed the contract value');
-        }
-
-        const result = await conn.query(
-            `INSERT INTO events (client_id, package_id, custom_order, event_date, start_time, venue_name, venue_address,
-                                 status, contract_value, setup_notes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [input.client_id, input.package_id ?? null, input.custom_order ?? null, input.event_date, input.start_time ?? null, input.venue_name ?? null,
-                input.venue_address ?? null, input.status, contractValue, input.setup_notes ?? null]
-        );
-        const id = result.insertId;
-
-        for (const [itemId, qty] of wanted) {
-            await conn.query(
-                `INSERT INTO event_items (event_id, item_id, qty, is_reserved, return_due_date, return_status, pull_status)
-                 VALUES (?, ?, ?, TRUE, ?, 'Pending', 'Pending')`,
-                [id, itemId, qty, dueDate]
-            );
-        }
-        for (const [consumableId, qty] of usage) {
-            await conn.query('INSERT INTO event_consumables (event_id, consumable_id, qty_used) VALUES (?, ?, ?)', [id, consumableId, qty]);
-            await conn.query('UPDATE consumables SET current_level = current_level - ? WHERE consumable_id = ?', [qty, consumableId]);
-        }
-        if (input.downpayment) {
-            const { amount, method, reference_no } = input.downpayment;
-            await conn.query(
-                "INSERT INTO payments (event_id, type, amount, method, reference_no) VALUES (?, 'downpayment', ?, ?, ?)",
-                [id, amount, method ?? null, reference_no ?? null]
-            );
-        }
-        if (input.status === 'Pending') {
-            await notify(conn, `New inquiry: ${client.full_name} for ${input.event_date} (event #${id})`, 'new_inquiry');
-        }
-        return id;
+        if (input.new_client) input.client_id = await insertWalkIn(conn, input.new_client, input);
+        return insertBooking(conn, input);
     });
-
     res.status(201).json(await findEvent(eventId));
 });
 
-// Edits details and moves the status along. Dates and items are fixed once booked
-// because changing them means re-checking availability; cancel and rebook instead.
+// Moves an event to another date, taking its item lines (and their return due dates) along.
+// Only possible before anything has been pulled, and only if the items are free on the new date.
+async function reschedule(conn, id, from, to) {
+    if (to < await today(conn)) throw new HttpError(400, 'event_date cannot be in the past');
+    const lines = await conn.query(
+        `SELECT ei.item_id, ei.qty, ei.pull_status, ri.name FROM event_items ei JOIN rental_items ri ON ri.item_id = ei.item_id
+         WHERE ei.event_id = ? AND ei.return_status NOT IN ('Returned', 'Damaged', 'Missing')`,
+        [id]
+    );
+    if (lines.some((l) => l.pull_status !== 'Pending')) {
+        throw new HttpError(409, 'Items for this event have already been pulled, so its date can no longer change');
+    }
+    const wanted = new Map();
+    for (const l of lines) wanted.set(l.item_id, { name: l.name, qty: (wanted.get(l.item_id)?.qty || 0) + l.qty });
+    const itemIds = [...wanted.keys()];
+    if (itemIds.length) {
+        // Same row locks as a new booking, so the two can't both take the last units.
+        await conn.query('SELECT item_id FROM rental_items WHERE item_id IN (?) FOR UPDATE', [itemIds]);
+        const free = await freeOnDate(conn, to, itemIds, { exceptEvent: id });
+        const short = itemIds
+            .filter((i) => wanted.get(i).qty > free.get(i))
+            .map((i) => ({ item_id: i, name: wanted.get(i).name, requested: wanted.get(i).qty, available: free.get(i) }));
+        if (short.length) throw new HttpError(409, `Not enough stock on ${to}`, short);
+    }
+    await conn.query(
+        'UPDATE event_items SET return_due_date = return_due_date + INTERVAL DATEDIFF(?, ?) DAY WHERE event_id = ? AND return_due_date IS NOT NULL',
+        [to, from, id]
+    );
+}
+
+// Edits details, moves the date and moves the status along. Item lines are fixed once
+// booked; cancel and rebook to change them.
 router.patch('/:id', async (req, res) => {
     const id = parseId(req.params.id);
     const input = validate(req.body, {
+        event_date: date({ required: true }),
         start_time: time(),
+        event_type: str({ required: true, max: 60 }),
         venue_name: str({ max: 150 }),
-        venue_address: str({ max: 2000 }),
-        custom_order: str({ max: 255 }),
+        ...addressFields('venue_'),
+        custom_order: str({ max: 2000 }),
         setup_notes: str({ max: 5000 }),
         status: oneOf(SETTABLE_STATUSES, { required: true }),
         contract_value: money({ required: true }),
@@ -247,14 +207,17 @@ router.patch('/:id', async (req, res) => {
 
     await db.transaction(async (conn) => {
         const [event] = await conn.query(
-            `SELECT e.status, ${PAID} AS paid FROM events e WHERE e.event_id = ? FOR UPDATE`, [id]
+            `SELECT e.status, e.event_date, ${PAID} AS paid FROM events e WHERE e.event_id = ? FOR UPDATE`, [id]
         );
         if (!event) throw new HttpError(404, `Event ${id} not found`);
         if (event.status === 'Cancelled') throw new HttpError(409, 'Cancelled events cannot be edited');
         if (input.contract_value !== undefined && cents(input.contract_value) < cents(event.paid)) {
             throw new HttpError(409, `contract_value cannot be less than the ${event.paid} already paid`);
         }
+        if (input.event_date === event.event_date) delete input.event_date;
+        if (input.event_date) await reschedule(conn, id, event.event_date, input.event_date);
         const fields = Object.keys(input);
+        if (!fields.length) return;
         await conn.query(
             `UPDATE events SET ${fields.map((f) => `${f} = ?`).join(', ')} WHERE event_id = ?`,
             [...fields.map((f) => input[f]), id]

@@ -4,15 +4,15 @@ const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
 const { validate, parseId, paging, likePattern, str, int, money, oneOf } = require('../lib/validate');
-const { LINE_DUE, RETURN_STATUS } = require('../lib/sql');
+const { LINE_DUE, RETURN_STATUS, CLIENT_NAME } = require('../lib/sql');
 
 const router = express.Router();
 
 const STATUSES = ['Reserved', 'Out', 'Overdue', 'Returned', 'Damaged', 'Missing', 'Cancelled'];
 
 const RETURN_SELECT = `
-    SELECT ei.event_item_id, ei.item_id, ri.name AS item_name, ri.category, ei.qty,
-           e.event_id, e.event_date, c.client_id, c.full_name AS client_name,
+    SELECT ei.event_item_id, ei.item_id, ri.item_code, ri.name AS item_name, ri.category, ei.qty,
+           e.event_id, e.event_date, c.client_id, ${CLIENT_NAME} AS client_name,
            ${LINE_DUE} AS expected_return, ${RETURN_STATUS} AS status, ei.pull_status,
            rl.returned_at, rl.condition_on_return, rl.damage_fee
     FROM event_items ei
@@ -52,8 +52,8 @@ router.get('/', async (req, res) => {
     const where = [];
     const params = [];
     if (q) {
-        where.push('(ri.name LIKE ? OR c.full_name LIKE ?)');
-        params.push(likePattern(q), likePattern(q));
+        where.push(`(ri.name LIKE ? OR ri.item_code LIKE ? OR ${CLIENT_NAME} LIKE ?)`);
+        params.push(likePattern(q), likePattern(q), likePattern(q));
     }
     if (event_id) { where.push('e.event_id = ?'); params.push(event_id); }
 

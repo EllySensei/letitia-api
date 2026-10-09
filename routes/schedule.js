@@ -3,7 +3,7 @@ const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
 const { validate, int, date, bool, oneOf } = require('../lib/validate');
-const { FREE_ON_DATE } = require('../lib/sql');
+const { FREE_ON_DATE, CLIENT_NAME, VENUE_ADDRESS } = require('../lib/sql');
 
 const router = express.Router();
 
@@ -14,7 +14,7 @@ router.get('/availability', async (req, res) => {
     const input = validate(req.query, { date: date({ required: true }), all: bool({ default: false }) });
     const rows = await db.query(
         `SELECT * FROM (
-             SELECT ri.item_id, ri.name, ri.category, ri.qty_total, ri.rental_price, ${FREE_ON_DATE} AS qty_free
+             SELECT ri.item_id, ri.item_code, ri.name, ri.category, ri.qty_total, ri.rental_price, ${FREE_ON_DATE} AS qty_free
              FROM rental_items ri WHERE ri.is_deleted = 0
          ) x ${input.all ? '' : 'WHERE x.qty_free > 0'} ORDER BY x.name`,
         [input.date]
@@ -27,7 +27,7 @@ router.get('/availability', async (req, res) => {
 router.get('/pullsheet', async (req, res) => {
     const input = validate(req.query, { date: date({ required: true }) });
     const items = await db.query(
-        `SELECT ri.item_id, ri.name, ri.category, SUM(ei.qty) AS qty_needed,
+        `SELECT ri.item_id, ri.item_code, ri.name, ri.category, SUM(ei.qty) AS qty_needed,
                 CASE MIN(FIELD(ei.pull_status, 'Pending', 'Pulled', 'Packed'))
                     WHEN 3 THEN 'Packed' WHEN 2 THEN 'Pulled' ELSE 'Pending' END AS status,
                 GROUP_CONCAT(DISTINCT e.event_id ORDER BY e.event_id) AS event_ids
@@ -35,7 +35,7 @@ router.get('/pullsheet', async (req, res) => {
          JOIN events e ON e.event_id = ei.event_id
          JOIN rental_items ri ON ri.item_id = ei.item_id
          WHERE e.event_date = ? AND e.status <> 'Cancelled'
-         GROUP BY ri.item_id, ri.name, ri.category
+         GROUP BY ri.item_id, ri.item_code, ri.name, ri.category
          ORDER BY ri.category, ri.name`,
         [input.date]
     );
@@ -49,7 +49,7 @@ router.get('/pullsheet', async (req, res) => {
         [input.date]
     );
     const events = await db.query(
-        `SELECT e.event_id, c.full_name AS client_name, e.start_time, e.venue_name, e.setup_notes
+        `SELECT e.event_id, ${CLIENT_NAME} AS client_name, e.event_type, e.start_time, e.venue_name, ${VENUE_ADDRESS} AS venue_address, e.setup_notes
          FROM events e JOIN clients c ON c.client_id = e.client_id
          WHERE e.event_date = ? AND e.status <> 'Cancelled' ORDER BY e.start_time`,
         [input.date]

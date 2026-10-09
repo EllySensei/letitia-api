@@ -5,6 +5,8 @@ const db = require('./lib/db');
 const { initDatabase } = require('./db_init');
 const { requireAuth, adminForWrites, seedAdmin } = require('./lib/auth');
 const { notFound, errorHandler } = require('./lib/errors');
+const { requestContext } = require('./lib/context');
+const { pruneChangeLog } = require('./lib/changes');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -17,9 +19,11 @@ const dbConfig = {
     database: process.env.DB_NAME,
 };
 
-// Packages carry a picture, so they get a bigger body limit than everything else.
-app.use('/packages', express.json({ limit: '2mb' }));
+// Packages and rental items carry a picture, so they get a bigger body limit than everything else.
+app.use(['/packages', '/inventory'], express.json({ limit: '2mb' }));
 app.use(express.json({ limit: '100kb' }));
+// After the body parsers, whose stream callbacks would lose it. Labels each request's database writes.
+app.use(requestContext);
 
 // Lets the frontend call the API from another origin (e.g. a separate dev server).
 if (process.env.CORS_ORIGIN) {
@@ -35,11 +39,13 @@ if (process.env.CORS_ORIGIN) {
     });
 }
 
-// Serves the frontend, so http://localhost:3000 opens the app and its API calls stay same-origin.
-app.use(express.static(path.resolve(__dirname, process.env.FRONTEND_DIR || '../Laetitia-frontend')));
+// Serves the frontend: http://localhost:3000 is the storefront and /admin the dashboard, and
+// their API calls stay same-origin.
+app.use(express.static(path.resolve(__dirname, process.env.FRONTEND_DIR || '../Laetitia-frontend'), { extensions: ['html'] }));
 
-// Login is public; every other route needs a token, and only admins can make changes.
+// Login and the storefront are public; every other route needs a token, and only admins can make changes.
 app.use('/auth', require('./routes/auth'));
+app.use('/public', require('./routes/public'));
 app.use(requireAuth, adminForWrites);
 app.use('/clients', require('./routes/clients'));
 app.use('/events', require('./routes/events'));
@@ -51,6 +57,8 @@ app.use('/returns', require('./routes/returns'));
 app.use(require('./routes/schedule'));
 app.use(require('./routes/dashboard'));
 app.use(require('./routes/notifications'));
+app.use(require('./routes/heartbeat'));
+app.use('/database', require('./routes/database'));
 
 app.use(notFound);
 app.use(errorHandler);
@@ -71,6 +79,12 @@ async function start() {
 
     // Created after init so the pool's default database is guaranteed to exist.
     db.connect(dbConfig);
+
+    // The change log keeps CHANGE_LOG_DAYS (default 90) days of history, trimmed daily.
+    const keepDays = Number(process.env.CHANGE_LOG_DAYS) || 90;
+    const prune = () => pruneChangeLog(db, keepDays).catch((err) => console.error('[changes] pruning the change log failed:', err.message));
+    await prune();
+    setInterval(prune, 24 * 60 * 60 * 1000).unref();
 
     try {
         await seedAdmin();

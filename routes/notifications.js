@@ -2,7 +2,7 @@ const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
 const { validate, parseId, paging, int, bool } = require('../lib/validate');
-const { REMAINING } = require('../lib/sql');
+const { REMAINING, CLIENT_NAME, CLIENT_PHONE } = require('../lib/sql');
 const { notify, syncAlerts } = require('../lib/notify');
 
 const router = express.Router();
@@ -11,7 +11,7 @@ router.get('/notifications', async (req, res) => {
     const { unread, limit, offset } = validate(req.query, { unread: bool({ default: false }), ...paging });
     await syncAlerts();
     const rows = await db.query(
-        `SELECT notification_id, message, type, is_read, created_at FROM notifications
+        `SELECT notification_id, message, type, event_id, is_read, created_at FROM notifications
          ${unread ? 'WHERE is_read = 0' : ''} ORDER BY created_at DESC, notification_id DESC LIMIT ? OFFSET ?`,
         [limit, offset]
     );
@@ -44,11 +44,11 @@ router.post('/reminders', async (req, res) => {
     }
 
     const owing = await db.query(
-        `SELECT c.client_id, c.full_name, c.email, c.phone, SUM(${REMAINING}) AS balance
+        `SELECT c.client_id, ${CLIENT_NAME} AS full_name, c.email, ${CLIENT_PHONE} AS phone, SUM(${REMAINING}) AS balance
          FROM clients c JOIN events e ON e.client_id = c.client_id
          WHERE c.is_deleted = 0 AND e.status <> 'Cancelled' ${client_id ? 'AND c.client_id = ?' : ''}
-         GROUP BY c.client_id, c.full_name, c.email, c.phone
-         HAVING balance > 0 ORDER BY c.full_name`,
+         GROUP BY c.client_id, c.first_name, c.middle_name, c.last_name, c.email, c.phone_country_code, c.phone_number
+         HAVING balance > 0 ORDER BY c.last_name, c.first_name`,
         client_id ? [client_id] : []
     );
     if (client_id && !owing.length) throw new HttpError(409, `Client ${client_id} has no outstanding balance`);
