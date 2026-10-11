@@ -1,10 +1,11 @@
-// The admin Database tab: every table with its rows, and a console of the change log.
-// Read-only, and admins only, even for looking.
+// The admin Database tab: every table with its rows, a console of the change log, and the
+// sample-data generator. Admins only, even for looking.
 const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
 const { requireAdmin } = require('../lib/auth');
-const { validate, paging, str, int } = require('../lib/validate');
+const { validate, paging, requireConfirm, str, int } = require('../lib/validate');
+const { generateSampleData, resetIds } = require('../lib/sampleData');
 
 const router = express.Router();
 router.use(requireAdmin);
@@ -100,6 +101,16 @@ router.get('/changes', async (req, res) => {
         [...params, limit]
     );
     res.json(after !== undefined ? rows : rows.reverse());
+});
+
+// Replaces every client, event, package, item and payment with the sample set in
+// lib/sampleData.js. Admin accounts are kept. Needs ?confirm=true.
+router.post('/sample-data', async (req, res) => {
+    requireConfirm(req);
+    const counts = await db.transaction(generateSampleData);
+    await resetIds(db);
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    res.status(201).json({ message: `Sample data generated: ${total} rows in ${Object.keys(counts).length} tables`, counts });
 });
 
 module.exports = router;

@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laetitia ER Diagram</title>
+<style>
+  :root { --ink: #1f2a22; --muted: #5d6a5f; --line: #c9d3c3; --bg: #ffffff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px; background: var(--bg); color: var(--ink); font-family: "Segoe UI", Arial, sans-serif; }
+  header { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; border-bottom: 2px solid var(--ink); padding-bottom: 12px; margin-bottom: 20px; }
+  h1 { margin: 0; font-size: 22px; }
+  .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .legend { font-size: 12px; color: var(--muted); text-align: right; line-height: 1.6; }
+  .legend b { color: var(--ink); }
+  .diagram { display: flex; justify-content: center; }
+  .notes { margin-top: 20px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; font-size: 12px; }
+  .notes section { border: 1px solid var(--line); border-radius: 4px; padding: 10px 14px; }
+  .notes h2 { font-size: 13px; margin: 0 0 6px; }
+  .notes ul { margin: 0; padding-left: 18px; line-height: 1.6; }
+  @media print { body { padding: 12px; zoom: 0.82; } @page { size: A3 portrait; margin: 10mm; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Laetitia: Event Styling, Balloon &amp; Decor Rental System</h1>
+    <p class="sub">Entity-Relationship Diagram · database <b>laetitia</b> (MariaDB) · 11 related tables, 11 foreign keys</p>
+  </div>
+  <div class="legend">
+    <b>PK</b> primary key · <b>FK</b> foreign key · <b>UK</b> unique<br>
+    <b>||</b> exactly one · <b>|o</b> zero or one · <b>o{</b> zero or many
+  </div>
+</header>
+
+<div class="diagram">
+<pre class="mermaid">
+erDiagram
+    clients ||--o{ events : "books"
+    packages |o--o{ events : "is chosen for"
+    packages ||--o{ package_items : "contains"
+    rental_items ||--o{ package_items : "is included in"
+    events ||--o{ event_items : "rents"
+    rental_items ||--o{ event_items : "is rented as"
+    events ||--o{ event_consumables : "uses"
+    consumables ||--o{ event_consumables : "is used in"
+    events ||--o{ payments : "is paid by"
+    event_items ||--o{ return_logs : "is checked in by"
+    clients |o--o| users : "signs in with"
+
+    clients {
+        int client_id PK
+        varchar first_name
+        varchar middle_name
+        varchar last_name
+        varchar phone_country_code
+        varchar phone_number
+        varchar email UK
+        varchar billing_name
+        text street
+        varchar barangay
+        varchar city_municipality
+        varchar province
+        boolean is_deleted
+        datetime created_at
+    }
+    users {
+        int user_id PK
+        varchar username UK "staff only"
+        varchar password_hash
+        varchar full_name "staff only"
+        varchar role "admin, staff, customer"
+        int client_id FK "customers only"
+        datetime created_at
+    }
+    packages {
+        int package_id PK
+        varchar name
+        varchar type
+        text description
+        decimal base_price
+        mediumtext image
+        boolean is_deleted
+    }
+    rental_items {
+        int item_id PK
+        varchar item_code UK
+        varchar name
+        varchar category
+        int qty_total
+        decimal rental_price
+        varchar item_condition
+        int qty_out_of_service
+        text description
+        mediumtext image
+        boolean is_deleted
+    }
+    consumables {
+        int consumable_id PK
+        varchar item_code UK
+        varchar name
+        varchar unit
+        int current_level
+        int reorder_level
+        datetime last_restocked_at
+        boolean is_deleted
+    }
+    package_items {
+        int package_item_id PK
+        int package_id FK
+        int item_id FK
+        int qty
+    }
+    events {
+        int event_id PK
+        int client_id FK
+        int package_id FK "nullable: custom orders"
+        varchar event_type
+        varchar source
+        text custom_order
+        date event_date
+        time start_time
+        varchar venue_name
+        text venue_street
+        varchar venue_barangay
+        varchar venue_city_municipality
+        varchar venue_province
+        varchar status
+        decimal contract_value
+        text setup_notes
+        datetime created_at
+    }
+    event_items {
+        int event_item_id PK
+        int event_id FK
+        int item_id FK
+        int qty
+        boolean is_reserved
+        date return_due_date
+        varchar return_status
+        varchar pull_status
+    }
+    event_consumables {
+        int id PK
+        int event_id FK
+        int consumable_id FK
+        int qty_used
+    }
+    payments {
+        int payment_id PK
+        int event_id FK
+        varchar type
+        decimal amount
+        varchar method
+        datetime paid_at
+        varchar reference_no
+    }
+    return_logs {
+        int return_id PK
+        int event_item_id FK
+        datetime returned_at
+        varchar condition_on_return
+        decimal damage_fee
+        decimal deposit_charged
+    }
+</pre>
+</div>
+
+<div class="notes">
+  <section>
+    <h2>Table roles</h2>
+    <ul>
+      <li><b>Main entities:</b> clients, packages, rental_items, consumables, users (login accounts)</li>
+      <li><b>Transactions / logs:</b> events (bookings), payments, return_logs</li>
+      <li><b>Junction tables (many-to-many):</b> package_items, event_items, event_consumables</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Many-to-many relationships</h2>
+    <ul>
+      <li>packages ↔ rental_items through <b>package_items</b></li>
+      <li>events ↔ rental_items through <b>event_items</b></li>
+      <li>events ↔ consumables through <b>event_consumables</b></li>
+    </ul>
+  </section>
+  <section>
+    <h2>System tables (not shown)</h2>
+    <ul>
+      
+      <li><b>notifications</b>: alerts in the bell menu</li>
+      <li><b>change_log</b>, <b>data_versions</b>: record of every change, used by the Database tab</li>
+    </ul>
+  </section>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    er: { layoutDirection: 'TB', minEntityWidth: 120, entityPadding: 12, useMaxWidth: false },
+    themeVariables: {
+      fontFamily: 'Segoe UI, Arial, sans-serif', fontSize: '13px',
+      primaryColor: '#eef4ea', primaryBorderColor: '#3f6b3a', primaryTextColor: '#1f2a22',
+      lineColor: '#3f6b3a', attributeBackgroundColorOdd: '#ffffff', attributeBackgroundColorEven: '#f5f8f2',
+    },
+  });
+</script>
+</body>
+</html>

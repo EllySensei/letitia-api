@@ -5,18 +5,6 @@ const { parsePhone } = require('./lib/phone');
 // Every statement uses IF NOT EXISTS, so existing tables and their data are never touched.
 const TABLES = [
     {
-        name: 'users',
-        columns: ['user_id', 'username', 'password_hash', 'full_name', 'role', 'created_at'],
-        sql: `CREATE TABLE IF NOT EXISTS users (
-            user_id       INT AUTO_INCREMENT PRIMARY KEY,
-            username      VARCHAR(60)  NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
-            full_name     VARCHAR(150),
-            role          VARCHAR(30)  NOT NULL DEFAULT 'admin',
-            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB`,
-    },
-    {
         name: 'clients',
         columns: ['client_id', 'first_name', 'middle_name', 'last_name', 'phone_country_code', 'phone_number', 'email',
             'billing_name', 'street', 'barangay', 'city_municipality', 'province', 'is_deleted', 'created_at'],
@@ -35,6 +23,23 @@ const TABLES = [
             province          VARCHAR(100),
             is_deleted       BOOLEAN NOT NULL DEFAULT FALSE,
             created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB`,
+    },
+    {
+        // Login accounts. Staff (admin, staff) sign in with a username; customers sign in with
+        // the email of the client record they are linked to, so their name, email and phone
+        // live only in clients.
+        name: 'users',
+        columns: ['user_id', 'username', 'password_hash', 'full_name', 'role', 'client_id', 'created_at'],
+        sql: `CREATE TABLE IF NOT EXISTS users (
+            user_id       INT AUTO_INCREMENT PRIMARY KEY,
+            username      VARCHAR(60)  NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            full_name     VARCHAR(150),
+            role          VARCHAR(30)  NOT NULL DEFAULT 'admin',
+            client_id     INT NULL UNIQUE,
+            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT fk_users_client FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE RESTRICT
         ) ENGINE=InnoDB`,
     },
     {
@@ -227,7 +232,8 @@ const TABLES = [
 
 // Columns added after the first schema. CREATE TABLE IF NOT EXISTS leaves existing tables
 // alone, so databases created earlier get them here; on fresh databases these are no-ops.
-// The optional fourth entry fills the new column from existing data, once, when it's added.
+// The optional fourth entry (a statement or a list of them) runs once, right after the column is
+// added: it fills the column from existing data or finishes the change.
 const ADDED_COLUMNS = [
     ['clients', 'is_deleted', 'BOOLEAN NOT NULL DEFAULT FALSE'],
     ['consumables', 'is_deleted', 'BOOLEAN NOT NULL DEFAULT FALSE'],
@@ -266,6 +272,11 @@ const ADDED_COLUMNS = [
     ['events', 'source', "VARCHAR(20) NOT NULL DEFAULT 'admin'", "UPDATE events SET source = 'online' WHERE setup_notes LIKE 'Online order%'"],
     ['rental_items', 'item_code', 'VARCHAR(30) UNIQUE', "UPDATE rental_items SET item_code = CONCAT('RNT-', LPAD(item_id, 4, '0'))"],
     ['consumables', 'item_code', 'VARCHAR(30) UNIQUE', "UPDATE consumables SET item_code = CONCAT('CNS-', LPAD(consumable_id, 4, '0'))"],
+    // Customer accounts: the client a login belongs to. Customers have no username of their own.
+    ['users', 'client_id', 'INT NULL UNIQUE', [
+        'ALTER TABLE users ADD CONSTRAINT fk_users_client FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE RESTRICT',
+        'ALTER TABLE users MODIFY COLUMN username VARCHAR(60) NULL',
+    ]],
 ];
 
 // Columns that grew. Each is widened only while it's still the old type.
@@ -364,7 +375,7 @@ async function upgradeColumns(conn, dbName) {
     for (const [table, column, ddl, backfill] of ADDED_COLUMNS) {
         if (cols.has(`${table}.${column}`)) continue;
         await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${ddl}`);
-        if (backfill) await conn.query(backfill);
+        for (const statement of [backfill ?? []].flat()) await conn.query(statement);
         console.log(`[db] ${table}.${column}: added`);
     }
 

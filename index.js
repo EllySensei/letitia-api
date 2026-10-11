@@ -3,7 +3,7 @@ const path = require('path');
 const express = require('express');
 const db = require('./lib/db');
 const { initDatabase } = require('./db_init');
-const { requireAuth, adminForWrites, seedAdmin } = require('./lib/auth');
+const { requireAuth, requireStaff, adminForWrites, seedAdmin } = require('./lib/auth');
 const { notFound, errorHandler } = require('./lib/errors');
 const { requestContext } = require('./lib/context');
 const { pruneChangeLog } = require('./lib/changes');
@@ -41,12 +41,14 @@ if (process.env.CORS_ORIGIN) {
 
 // Serves the frontend: http://localhost:3000 is the storefront and /admin the dashboard, and
 // their API calls stay same-origin.
-app.use(express.static(path.resolve(__dirname, process.env.FRONTEND_DIR || '../Laetitia-frontend'), { extensions: ['html'] }));
+app.use(express.static(path.resolve(__dirname, process.env.FRONTEND_DIR || '../letitia-frontend'), { extensions: ['html'] }));
 
-// Login and the storefront are public; every other route needs a token, and only admins can make changes.
+// Login, sign-up and the catalog are public; customer accounts have their own routes; every
+// other route is the admin dashboard's: staff only, and only admins can make changes.
 app.use('/auth', require('./routes/auth'));
 app.use('/public', require('./routes/public'));
-app.use(requireAuth, adminForWrites);
+app.use('/account', require('./routes/account'));
+app.use(requireAuth, requireStaff, adminForWrites);
 app.use('/clients', require('./routes/clients'));
 app.use('/events', require('./routes/events'));
 app.use('/inventory', require('./routes/inventory'));
@@ -59,6 +61,7 @@ app.use(require('./routes/dashboard'));
 app.use(require('./routes/notifications'));
 app.use(require('./routes/heartbeat'));
 app.use('/database', require('./routes/database'));
+app.use('/users', require('./routes/users'));
 
 app.use(notFound);
 app.use(errorHandler);

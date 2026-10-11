@@ -2,6 +2,7 @@
 const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
+const { purge } = require('../lib/purge');
 const { validate, parseId, paging, likePattern, archivedQuery, str, code, int, oneOf } = require('../lib/validate');
 const { stockStatus, assertCodeFree, assignCode } = require('../lib/sql');
 
@@ -107,6 +108,14 @@ router.delete('/:id', async (req, res) => {
     const result = await db.query('UPDATE consumables SET is_deleted = 1 WHERE consumable_id = ? AND is_deleted = 0', [id]);
     if (!result.affectedRows) throw new HttpError(404, `Consumable ${id} not found`);
     res.json({ message: `Consumable ${id} archived` });
+});
+
+// Deletes an archived consumable for good, if no event used it.
+router.delete('/:id/permanent', async (req, res) => {
+    res.json(await purge({
+        table: 'consumables', idColumn: 'consumable_id', id: parseId(req.params.id), label: 'Consumable',
+        uses: [['SELECT COUNT(DISTINCT event_id) AS n FROM event_consumables WHERE consumable_id = ?', 'event(s)']],
+    }));
 });
 
 module.exports = router;

@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
+const { purge } = require('../lib/purge');
 const {
     validate, parseId, paging, likePattern, requireConfirm, nameFields, addressFields, archivedQuery, str, email, phone,
 } = require('../lib/validate');
@@ -26,6 +27,7 @@ const CLIENT_SELECT = `
            c.phone_country_code, c.phone_number, c.email, c.billing_name,
            c.street, c.barangay, c.city_municipality, c.province, ${CLIENT_ADDRESS} AS billing_address,
            c.is_deleted AS archived, c.created_at,
+           EXISTS (SELECT 1 FROM users u WHERE u.client_id = c.client_id) AS has_account,
            ne.event_id AS next_event_id, ne.event_date AS next_event_date, ne.venue_name AS next_event_venue,
            COALESCE(t.total_contract, 0) AS total_contract, COALESCE(t.balance, 0) AS balance
     FROM clients c
@@ -146,6 +148,17 @@ router.delete('/:id', async (req, res) => {
         await conn.query('UPDATE clients SET is_deleted = 1 WHERE client_id = ?', [id]);
     });
     res.json({ message: `Client ${id} archived` });
+});
+
+// Deletes an archived client for good, if they never booked an event and have no login.
+router.delete('/:id/permanent', async (req, res) => {
+    res.json(await purge({
+        table: 'clients', idColumn: 'client_id', id: parseId(req.params.id), label: 'Client',
+        uses: [
+            ['SELECT COUNT(*) AS n FROM events WHERE client_id = ?', 'event(s)'],
+            ['SELECT COUNT(*) AS n FROM users WHERE client_id = ?', 'a customer account'],
+        ],
+    }));
 });
 
 module.exports = router;

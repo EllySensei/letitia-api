@@ -1,6 +1,8 @@
 const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
+const { addStarterPackages, describeCounts } = require('../lib/sampleData');
+const { purge } = require('../lib/purge');
 const { validate, parseId, requireConfirm, archivedQuery, str, int, money, list, image } = require('../lib/validate');
 
 const router = express.Router();
@@ -87,6 +89,12 @@ router.post('/', async (req, res) => {
 
 // Sent fields replace the stored ones: image null removes the picture, and items (if sent)
 // replace the whole contents. Events already booked keep the items they reserved.
+// "Add starter packages": the standard packages with their items (missing items are added too).
+router.post('/starter', async (req, res) => {
+    const result = await db.transaction(addStarterPackages);
+    res.status(201).json({ message: describeCounts([['packages', result.packages], ['rental items', result.items]]), ...result });
+});
+
 router.patch('/:id', async (req, res) => {
     const id = parseId(req.params.id);
     const { items, ...input } = validate(req.body, packageSchema, { partial: true });
@@ -135,6 +143,15 @@ router.delete('/:id', async (req, res) => {
     const result = await db.query('UPDATE packages SET is_deleted = 1 WHERE package_id = ? AND is_deleted = 0', [id]);
     if (!result.affectedRows) throw new HttpError(404, `Package ${id} not found`);
     res.json({ message: `Package ${id} archived` });
+});
+
+// Deletes an archived package for good, if no event was ever booked with it. Its item
+// list (package_items) goes with it.
+router.delete('/:id/permanent', async (req, res) => {
+    res.json(await purge({
+        table: 'packages', idColumn: 'package_id', id: parseId(req.params.id), label: 'Package',
+        uses: [['SELECT COUNT(*) AS n FROM events WHERE package_id = ?', 'event(s)']],
+    }));
 });
 
 module.exports = router;

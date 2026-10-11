@@ -2,6 +2,8 @@
 const express = require('express');
 const db = require('../lib/db');
 const { HttpError } = require('../lib/errors');
+const { addStarterItems, addStarterConsumables, describeCounts } = require('../lib/sampleData');
+const { purge } = require('../lib/purge');
 const {
     validate, parseId, paging, likePattern, requireConfirm, archivedQuery, str, code, int, money, oneOf, image,
 } = require('../lib/validate');
@@ -97,6 +99,15 @@ router.post('/', async (req, res) => {
     res.status(201).json(await findItem(id));
 });
 
+// "Add starter items": the standard rental items and consumables, skipping any already there.
+router.post('/starter', async (req, res) => {
+    const result = await db.transaction(async (conn) => ({
+        items: (await addStarterItems(conn)).counts,
+        consumables: await addStarterConsumables(conn),
+    }));
+    res.status(201).json({ message: describeCounts([['rental items', result.items], ['consumables', result.consumables]]), ...result });
+});
+
 router.patch('/:id', async (req, res) => {
     const id = parseId(req.params.id);
     const input = validate(req.body, itemSchema, { partial: true });
@@ -170,6 +181,17 @@ router.delete('/:id', async (req, res) => {
         await conn.query('UPDATE rental_items SET is_deleted = 1 WHERE item_id = ?', [id]);
     });
     res.json({ message: `Inventory item ${id} archived` });
+});
+
+// Deletes an archived rental item for good, if no package or booking includes it.
+router.delete('/:id/permanent', async (req, res) => {
+    res.json(await purge({
+        table: 'rental_items', idColumn: 'item_id', id: parseId(req.params.id), label: 'Inventory item',
+        uses: [
+            ['SELECT COUNT(*) AS n FROM package_items WHERE item_id = ?', 'package(s)'],
+            ['SELECT COUNT(DISTINCT event_id) AS n FROM event_items WHERE item_id = ?', 'event(s)'],
+        ],
+    }));
 });
 
 module.exports = router;
